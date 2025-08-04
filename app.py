@@ -1,46 +1,84 @@
 import streamlit as st
 import pandas as pd
+from github import Github, UnknownObjectException
 import io
 
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(layout="wide", page_title="Analyse Financière BRVM")
-st.title("📊 Application d'Analyse Financière (Version Simple)")
+st.title("📊 Application d'Analyse Financière BRVM")
 
-# --- Initialisation de l'état de la session ---
-# 'df' sera notre base de données en mémoire pendant la session
-if 'df' not in st.session_state:
-    st.session_state.df = pd.DataFrame(columns=[
-        "entreprise", "annee", "cours_action", "nombre_actions", "total_actifs",
-        "capitaux_propres", "total_dettes", "actifs_courants", "dettes_courantes",
-        "chiffre_affaires", "resultat_exploitation", "resultat_net"
-    ])
+# --- CONNEXION SÉCURISÉE À GITHUB ---
+# Cette partie utilise le fichier secrets.toml que vous avez configuré
+try:
+    GITHUB_TOKEN = st.secrets["github"]["token"]
+    REPO_NAME = st.secrets["github"]["repo"]
+    CSV_PATH = st.secrets["github"]["path"]
+    
+    # Authentification auprès de GitHub
+    g = Github(GITHUB_TOKEN)
+    # Récupération du dépôt
+    repo = g.get_repo(REPO_NAME)
+    github_ok = True
+except Exception as e:
+    st.error(f"Erreur de connexion à GitHub. Avez-vous bien configuré le fichier .streamlit/secrets.toml ?")
+    st.error(f"Détail de l'erreur : {e}")
+    github_ok = False
 
-# --- PARTIE 1 : CHARGEMENT DES DONNÉES ---
-st.header("1. Chargez votre fichier de données")
-st.markdown("Uploadez votre fichier `data.csv`. Si vous n'en avez pas, vous pouvez en télécharger un vide à la fin de la page.")
+# --- FONCTIONS POUR LIRE ET ÉCRIRE LES DONNÉES ---
 
-uploaded_file = st.file_uploader("Choisissez un fichier CSV", type="csv")
+def load_data_from_github():
+    """Charge le contenu du fichier CSV depuis GitHub via l'API."""
+    if not github_ok: return pd.DataFrame()
+    try:
+        file_content = repo.get_contents(CSV_PATH)
+        csv_data = file_content.decoded_content.decode('utf-8')
+        df = pd.read_csv(io.StringIO(csv_data))
+        return df
+    except UnknownObjectException:
+        st.warning(f"Le fichier '{CSV_PATH}' est introuvable sur le dépôt. Un nouveau sera créé.")
+        return pd.DataFrame(columns=[
+            "entreprise", "annee", "cours_action", "nombre_actions", "total_actifs", "capitaux_propres",
+            "total_dettes", "actifs_courants", "dettes_courantes", "chiffre_affaires",
+            "resultat_exploitation", "resultat_net"
+        ])
+    except Exception as e:
+        st.error(f"Erreur de chargement des données : {e}")
+        return pd.DataFrame()
 
-if uploaded_file is not None:
-    # Si un fichier est uploadé, on l'utilise comme notre base de données
-    st.session_state.df = pd.read_csv(uploaded_file)
-    st.success("Fichier chargé avec succès !")
+def update_data_on_github(df_to_save):
+    """Convertit le DataFrame en CSV et le pousse vers GitHub."""
+    if not github_ok: return False
+    try:
+        csv_string = df_to_save.to_csv(index=False)
+        commit_message = f"Mise à jour des données via l'application Streamlit"
+        
+        # On vérifie si le fichier existe pour savoir s'il faut le créer ou le mettre à jour
+        try:
+            file = repo.get_contents(CSV_PATH)
+            repo.update_file(file.path, commit_message, csv_string, file.sha)
+        except UnknownObjectException:
+            repo.create_file(CSV_PATH, commit_message, csv_string)
+        return True
+    except Exception as e:
+        st.error(f"Impossible de mettre à jour le fichier sur GitHub : {e}")
+        return False
 
-# Afficher les données actuellement en mémoire
-st.subheader("Données actuelles en mémoire")
-if not st.session_state.df.empty:
-    st.dataframe(st.session_state.df)
-else:
-    st.info("Aucune donnée chargée. Veuillez uploader un fichier ou en ajouter via le formulaire ci-dessous.")
+# --- INTERFACE DE L'APPLICATION ---
+
+# Charger les données une seule fois au début
+df_data = load_data_from_github()
+
+st.header("Aperçu des Données Actuelles")
+st.markdown("Voici les données actuellement présentes dans votre fichier `data.csv` sur GitHub.")
+st.dataframe(df_data)
 
 st.divider()
 
-# --- PARTIE 2 : SAISIE ET MISE À JOUR ---
-st.header("2. Saisir ou Mettre à Jour les Données")
-
-# Le formulaire de saisie
-with st.form("data_form", clear_on_submit=True):
-    st.subheader("Formulaire de saisie")
+st.header("Ajouter ou Mettre à Jour des Données")
+with st.form("data_form"):
+    st.markdown("Remplissez les champs et cliquez sur 'Mettre à Jour' pour sauvegarder sur GitHub.")
+    
+    # Formulaire de saisie
     col1, col2 = st.columns(2)
     with col1:
         nom_entreprise = st.text_input("Nom de l'entreprise")
@@ -54,52 +92,25 @@ with st.form("data_form", clear_on_submit=True):
         chiffre_affaires = st.number_input("Chiffre d'Affaires", min_value=0.0)
         resultat_net = st.number_input("Résultat Net")
     
-    # Bouton de soumission du formulaire
-    submitted = st.form_submit_button("Ajouter / Mettre à jour les données")
+    submitted = st.form_submit_button("🚀 Mettre à Jour sur GitHub")
 
     if submitted:
         if not nom_entreprise or annee_analyse <= 2000:
             st.error("Le nom de l'entreprise et une année valide sont obligatoires !")
         else:
             new_row = {
-                "entreprise": nom_entreprise,
-                "annee": int(annee_analyse),
-                "cours_action": cours_action,
-                "nombre_actions": nombre_actions,
-                "total_actifs": total_actifs,
-                "capitaux_propres": capitaux_propres,
-                "total_dettes": total_dettes,
-                "chiffre_affaires": chiffre_affaires,
-                "resultat_net": resultat_net,
-                # Initialisez les autres colonnes si elles existent
-                "actifs_courants": 0,
-                "dettes_courantes": 0,
-                "resultat_exploitation": 0,
+                "entreprise": nom_entreprise, "annee": int(annee_analyse), "cours_action": cours_action,
+                "nombre_actions": nombre_actions, "total_actifs": total_actifs, "capitaux_propres": capitaux_propres,
+                "total_dettes": total_dettes, "chiffre_affaires": chiffre_affaires, "resultat_net": resultat_net,
+                "actifs_courants": 0, "dettes_courantes": 0, "resultat_exploitation": 0,
             }
-            df_new = pd.DataFrame([new_row])
             
-            # Concaténer et supprimer les anciens doublons
-            st.session_state.df = pd.concat([st.session_state.df, df_new], ignore_index=True)
-            st.session_state.df = st.session_state.df.drop_duplicates(subset=['entreprise', 'annee'], keep='last')
-            
-            st.success(f"Données pour {nom_entreprise} ({annee_analyse}) ajoutées/mises à jour en mémoire. N'oubliez pas de télécharger le fichier !")
-
-st.divider()
-
-# --- PARTIE 3 : TÉLÉCHARGEMENT ---
-st.header("3. Sauvegardez votre travail")
-st.markdown("Cliquez ici pour télécharger le fichier `data.csv` contenant toutes vos modifications.")
-
-# Convertir le DataFrame en CSV pour le téléchargement
-@st.cache_data
-def convert_df_to_csv(df):
-    return df.to_csv(index=False).encode('utf-8')
-
-csv_data = convert_df_to_csv(st.session_state.df)
-
-st.download_button(
-   label="📥 Télécharger data.csv",
-   data=csv_data,
-   file_name='data.csv',
-   mime='text/csv',
-)
+            with st.spinner("Connexion à GitHub et sauvegarde des données..."):
+                df_new = pd.DataFrame([new_row])
+                df_updated = pd.concat([df_data, df_new], ignore_index=True)
+                df_updated = df_updated.drop_duplicates(subset=['entreprise', 'annee'], keep='last').sort_values(by=['entreprise', 'annee'])
+                
+                success = update_data_on_github(df_updated)
+                if success:
+                    st.success("Fichier mis à jour avec succès sur GitHub !")
+                    st.balloons()
